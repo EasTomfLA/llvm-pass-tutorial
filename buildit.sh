@@ -7,14 +7,21 @@ trap 'echo "错误：在第 $LINENO 行执行失败"; exit 1' ERR
 # 功能1：编译 Hikari 库
 function build_hikari() {
     echo "====== 开始执行：编译 Hikari 库 ======"
-    # 删除根目录下的旧文件（-f 选项使得即使文件不存在也不会报错）
+    
     rm -f ./output/libHikari.so
+    
+    # 确保build目录存在
+    mkdir -p ./output/
+    mkdir -p ./build/
 
     # 进入构建目录，清理、配置、编译
-    cd build && \
-    make clean && \
-    cmake .. && \
-    make
+    cd build
+    
+    # 尝试make clean，但如果失败则不终止脚本
+    make clean || echo "警告: make clean 失败，可能是首次编译"
+    
+    # 继续编译流程
+    cmake .. && make
 
     # 处理编译产物
     if [ -f ./Hikari/libHikari.so ]; then
@@ -36,10 +43,10 @@ function build_hikari() {
 
     # 验证文件是否存在
     if [ -f ./output/libHikari.so ]; then
-        echo "验证成功: libHikari.so 现在位于项目根目录"
+        echo "验证成功: libHikari.so 现在位于项目output目录"
     else
-        echo "验证失败: 项目根目录下未找到 libHikari.so"
-        ls -la ./*.so 2>/dev/null || echo "项目根目录下没有任何 .so 文件"
+        echo "验证失败: 项目output目录下未找到 libHikari.so"
+        ls -la ./output/*.so 2>/dev/null || echo "项目output目录下没有任何 .so 文件"
         return 1
     fi
     
@@ -51,7 +58,7 @@ function build_hikari() {
 function build_mem_watcher() {
     echo "====== 开始执行：编译 mem_watcher ======"
 
-    rm -f ./mem_obf
+    rm -f ./output/mem_obf
     
     # 检查依赖文件是否存在
     if [ ! -f ./output/libHikari.so ]; then
