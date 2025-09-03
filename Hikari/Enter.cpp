@@ -19,24 +19,30 @@ llvm::PassPluginLibraryInfo getOllvmPluginInfo() {
             PB.registerPipelineStartEPCallback(
                 [](llvm::ModulePassManager &PM,
                     llvm::OptimizationLevel Level) {
-                    PM.addPass(AntiClassDumpPass()); /*only apple*/
-                    PM.addPass(FunctionCallObfuscatePass()); /*only apple*/
-                    PM.addPass(IndirectBranchPass());
+                    // PM.addPass(AntiClassDumpPass()); /*only apple*/
+                    // PM.addPass(FunctionCallObfuscatePass()); /*only apple*/
+                    //PM.addPass(IndirectBranchPass());
+                    PM.addPass(MyTestIRPass());
 
-                    llvm::FunctionPassManager FPM;
-                    FPM.addPass(BogusControlFlowPass());
-                    FPM.addPass(FlatteningPass());
-                    FPM.addPass(SplitBasicBlockPass());
-                    FPM.addPass(SubstitutionPass());
-                    PM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
+                    //llvm::FunctionPassManager FPM;
+                    //FPM.addPass(BogusControlFlowPass());
+                    // FPM.addPass(FlatteningPass());
+                    // FPM.addPass(SplitBasicBlockPass());
+                    // FPM.addPass(SubstitutionPass());
+                    //PM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
                 });
 
             PB.registerOptimizerLastEPCallback(
                 [](llvm::ModulePassManager &PM,
                     llvm::OptimizationLevel Level) {
-                    PM.addPass(StringEncryptionPass());
-                    PM.addPass(FunctionWrapperPass());
+                    //PM.addPass(MyTestIRPass());
+                    //PM.addPass(StringEncryptionPass());
+                    //PM.addPass(FunctionWrapperPass());
                 });
+
+
+
+
     }};
 }
 

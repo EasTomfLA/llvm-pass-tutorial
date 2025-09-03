@@ -9,6 +9,7 @@
 #include "Transforms/Obfuscation/Split.h"
 #include "Transforms/Obfuscation/IndirectBranch.h"
 #include "Transforms/Obfuscation/FunctionWrapper.h"
+#include "Transforms/Obfuscation/MyTestPass.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include "llvm/IR/Verifier.h"

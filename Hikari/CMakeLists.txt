@@ -11,6 +11,7 @@ add_library(Hikari MODULE
         StringEncryption.cpp
         IndirectBranch.cpp
         FunctionWrapper.cpp
+        MyTestPass.cpp
         # Obfuscation.cpp
         include/Transforms/Obfuscation/AntiClassDump.h
         include/Transforms/Obfuscation/BogusControlFlow.h
@@ -24,6 +25,7 @@ add_library(Hikari MODULE
         include/Transforms/Obfuscation/StringEncryption.h
         include/Transforms/Obfuscation/Substitution.h
         include/Transforms/Obfuscation/Utils.h
+        include/Transforms/Obfuscation/MyTestPass.h
         Enter.cpp
         )
 
