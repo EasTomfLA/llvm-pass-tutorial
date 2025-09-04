@@ -14,72 +14,6 @@ using namespace std;
 namespace llvm {
 #if LLVM_VERSION_MAJOR >= 13
 
-bool mergeBlocks(llvm::BasicBlock* father_block, llvm::BasicBlock* son_block) {
-    // 1. 移除目标块的终结指令（如果需要）
-    if (llvm::Instruction* term = father_block->getTerminator()) {
-        term->eraseFromParent();
-    }
-    
-    // 2. 移动源块的所有指令到目标块
-    while (!son_block->empty()) {
-        llvm::Instruction& inst = son_block->front();
-        inst.removeFromParent();
-        father_block->getInstList().push_back(&inst);
-    }
-    
-    // 3. 替换对源块的所有引用
-    son_block->replaceAllUsesWith(son_block);
-    
-    // 4. 删除空的源块
-    son_block->eraseFromParent();
-    
-    return true;
-}
-
-void protectBasicBlocksWithName(
-    llvm::Module& M, 
-    const std::vector<llvm::BasicBlock*>& blocks,
-    const std::string& tableName = "ProtectedBasicBlockTable"
-) {
-    if (blocks.empty()) return;
-    
-    std::vector<llvm::Constant*> blockAddresses;
-    blockAddresses.reserve(blocks.size());
-    
-    // 为每个块创建BlockAddress
-    for (llvm::BasicBlock* block : blocks) {
-        if (block && block->getParent()) {
-            llvm::BlockAddress* addr = llvm::BlockAddress::get(
-                block->getParent(), block
-            );
-            blockAddresses.push_back(addr);
-        }
-    }
-    
-    if (blockAddresses.empty()) return;
-    
-    // 创建保护表
-    llvm::ArrayType* AT = llvm::ArrayType::get(
-        llvm::Type::getInt8PtrTy(M.getContext()), 
-        blockAddresses.size()
-    );
-    
-    llvm::Constant* BlockAddressArray = llvm::ConstantArray::get(
-        AT, 
-        llvm::ArrayRef<llvm::Constant*>(blockAddresses)
-    );
-    
-    llvm::GlobalVariable* Table = new llvm::GlobalVariable(
-        M, AT, false, 
-        llvm::GlobalValue::LinkageTypes::InternalLinkage,
-        BlockAddressArray, 
-        tableName
-    );
-    
-    // 防止优化器删除
-    appendToCompilerUsed(M, {Table});
-}
-
 
 PreservedAnalyses MyTestIRPass::run(Module &M, ModuleAnalysisManager& AM) {
     errs() << "Running MyTestIRPass On Module " << M.getName() << "\n";
@@ -92,8 +26,8 @@ PreservedAnalyses MyTestIRPass::run(Module &M, ModuleAnalysisManager& AM) {
     FunctionType *VOID_FT_NO_ARG = FunctionType::get(Type::getVoidTy(Context), false);
     Function *JF = Function::Create(VOID_FT_NO_ARG, Function::ExternalLinkage, "Jump_function", M);
 
-    BasicBlock *BB = BasicBlock::Create(Context, "entry", JF);
-    module_IRB.SetInsertPoint(BB);
+    BasicBlock *JF_BB = BasicBlock::Create(Context, "entry", JF);
+    module_IRB.SetInsertPoint(JF_BB);
     std::string AsmStr = R"(stp x0, x1, [sp, #-0x10]!
         ldr w0, [x30, w0, uxtw #2]
         add x30, x30, w0, uxtw
@@ -109,8 +43,12 @@ PreservedAnalyses MyTestIRPass::run(Module &M, ModuleAnalysisManager& AM) {
         InlineAsm::AD_ATT,
         false    
     );
-    module_IRB.CreateCall(IA);
+
+    
+    CallInst* jf_ci = module_IRB.CreateCall(IA);
     module_IRB.CreateRetVoid();
+
+    BlockAddress* JF_BA = BlockAddress::get(JF_BB);
 
 
     vector<BasicBlock* > modify_origin_BBs;
@@ -132,8 +70,22 @@ PreservedAnalyses MyTestIRPass::run(Module &M, ModuleAnalysisManager& AM) {
             }
             if (auto *BI = dyn_cast<BranchInst>(origin_BB->getTerminator())){
                 if (BI->isUnconditional()) {
-                    errs() << "adding Block " << std::to_string(block_index_count) << " to target\n";
-                    target_origin_BBs.push_back(&*origin_BB);
+                    bool is_PHI = false;
+                    BasicBlock* successor_block = BI->getSuccessor(0);
+                    for (auto &Phi : successor_block->phis()) {
+                        for (unsigned i = 0; i < Phi.getNumIncomingValues(); ++i) {
+                            if (Phi.getIncomingBlock(i) == &*origin_BB) {
+                                errs() << "Block " << std::to_string(block_index_count) << " relate with PHI, ingore" << "\n";
+                                is_PHI = true;
+                                break;
+                            }
+                        }
+                        if (is_PHI) break;
+                    }
+                    if (!is_PHI){
+                        errs() << "adding Block " << std::to_string(block_index_count) << " to target\n";
+                        target_origin_BBs.push_back(&*origin_BB);
+                    }
                 }
                 else 
                     errs() << "Block " << std::to_string(block_index_count) << " is conditional" << "\n";
@@ -142,15 +94,91 @@ PreservedAnalyses MyTestIRPass::run(Module &M, ModuleAnalysisManager& AM) {
                 errs() << "Block " << std::to_string(block_index_count) << " is not with BI-Terminator" << "\n";
             }
         }
+        if (target_origin_BBs.empty())
+            continue;
+
+        // BasicBlock *OBB = BasicBlock::Create(Context, "offset_block", &*F);
+        // BlockAddress* OBA = BlockAddress::get(OBB);
+        // IRBuilder<> OBB_IRB(OBB);
 
         
+        // target_origin_BBs.push_back(OBB);
+
         //init jump_block
         errs() << "init jump_block\n";
+
+        std::string jb_AsmStr = "bl #$0";
+        
+        InlineAsm *jb_IA = InlineAsm::get(
+            VOID_FT_NO_ARG,
+            jb_AsmStr,
+            "i",
+            true,    // 有副作用
+            false,   // 不对齐栈
+            InlineAsm::AD_ATT,
+            false    
+        );
+
+        std::string jb_empty_AsmStr = "";
+        
+        InlineAsm *jb_empty_IA = InlineAsm::get(
+            VOID_FT_NO_ARG,
+            jb_empty_AsmStr,
+            "",
+            true,    // 有副作用
+            false,   // 不对齐栈
+            InlineAsm::AD_ATT,
+            false    
+        );
+
+        //BasicBlock *LJF_BB = BasicBlock::Create(Context, "local_jf", &*F);
+        // IRBuilder<> LJF_BB_IRB(LJF_BB);
+        // std::string LJF_BB_AsmStr = R"(stp x0, x1, [sp, #-0x10]!
+        //     ldr w0, [x30, w0, uxtw #2]
+        //     add x30, x30, w0, uxtw
+        //     ldp x0, x1, [sp], #0x10)";
+        // std::string LJF_BB_Constraints = "";
+        
+        // InlineAsm *LJF_IA = InlineAsm::get(
+        //     VOID_FT_NO_ARG,
+        //     LJF_BB_AsmStr,
+        //     LJF_BB_Constraints,
+        //     true,    // 有副作用
+        //     false,   // 不对齐栈
+        //     InlineAsm::AD_ATT,
+        //     false    
+        // );
+
+        // LJF_BB_IRB.CreateCall(LJF_IA);
+        // LJF_BB_IRB.CreateRetVoid();
+
+        BasicBlock *LJF_BB = BasicBlock::Create(Context, "local_jf", &*F);
+        IRBuilder<> LJF_BB_IRB(LJF_BB);
+        LJF_BB_IRB.CreateUnreachable();
+
+
         BasicBlock *JBB = BasicBlock::Create(Context, "jump_block", &*F);
         IRBuilder<> JBB_IRB(JBB);
-        JBB_IRB.CreateCall(JF);
+        JBB_IRB.CreateCall(jb_IA, {JF_BA});
+
         JBB->moveAfter(&F->getEntryBlock());
+        // OBB->moveAfter(JBB);
+        LJF_BB->moveAfter(JBB);
+        //JBB_IRB.CreateUnreachable();
         BlockAddress* JBA = BlockAddress::get(JBB);
+
+
+        // llvm::Value* SwitchValue = JBB_IRB.getInt32(0);
+        // llvm::SwitchInst* Switch = JBB_IRB.CreateSwitch(SwitchValue, JBB, target_origin_BBs.size());
+        // for (size_t i = 0; i < target_origin_BBs.size(); ++i) {
+        //     llvm::ConstantInt* CaseVal = JBB_IRB.getInt32(i + 1);  // 1, 2, 3, ...
+        //     Switch->addCase(CaseVal, target_origin_BBs[i]);
+        // }
+
+
+
+
+
         //setup protect_block
         // BasicBlock *PBB = BasicBlock::Create(Context, "protect_block", &*F);
         // IRBuilder<> PBB_IRB(PBB);
@@ -191,41 +219,93 @@ PreservedAnalyses MyTestIRPass::run(Module &M, ModuleAnalysisManager& AM) {
         // IRBuilder<> JODBB_IRB(JODBB);
 
 
+
+        llvm::Constant* HEAD_OFFSET = JBB_IRB.getInt32(4);
         int modify_blockIndex = 0;
         int sindex = 0;
+        vector<BasicBlock*> wait_add_Ref_blocks;
+        set<BasicBlock*> modify_block_successors_set;
         for (auto origin_BB = target_origin_BBs.begin(); origin_BB != target_origin_BBs.end(); origin_BB++) {
             BasicBlock *BBPtr = *origin_BB;
+            // if (BBPtr == OBB) continue;
 
-            //add block offset data
+            //add block offset data to table
             BlockAddress* TBA = BlockAddress::get(BBPtr);
-            std::string data_str = ".long ($0 - $1)";  // 32位数据
+            std::string data_str = ".long ($0 - $1 - $2)";  // 32位数据
             llvm::InlineAsm* data_asm = llvm::InlineAsm::get(
                 VOID_FT_NO_ARG,
                 data_str,                    // 汇编字符串
-                "i,i",                       // 约束：i = 立即数
+                "i,i,i",                       // 约束：i = 立即数
                 true,                      // hasSideEffects = true（确保不被优化掉）
                 false,                     // isAlignStack = false
                 llvm::InlineAsm::AD_ATT    // 汇编方言
             );
-            JBB_IRB.CreateCall(data_asm, {TBA, JBA});
+            JBB_IRB.CreateCall(data_asm, {TBA, JBA, HEAD_OFFSET});
 
-            //add jump function arg to block
+
+            //add index data after block
+            BasicBlock *index_data_BB = BasicBlock::Create(Context, "", &*F);
+            index_data_BB->moveAfter(BBPtr);
+            IRBuilder<> index_data_BB_IRB(index_data_BB);
+            BlockAddress* index_data_BA = BlockAddress::get(index_data_BB);
+            std::string index_data_str = ".long $0";  // 32位数据
+            llvm::InlineAsm* index_data_IA = llvm::InlineAsm::get(
+                VOID_FT_NO_ARG,
+                index_data_str,                    // 汇编字符串
+                "i",                       // 约束：i = 立即数
+                true,                      // hasSideEffects = true（确保不被优化掉）
+                false,                     // isAlignStack = false
+                llvm::InlineAsm::AD_ATT    // 汇编方言
+            );
+
+            llvm::Constant* TABLE_INDEX = JBB_IRB.getInt32(modify_blockIndex);
+            index_data_BB_IRB.CreateCall(index_data_IA, {TABLE_INDEX});
+            index_data_BB_IRB.CreateUnreachable();
+            wait_add_Ref_blocks.push_back(index_data_BB);
+
+            
+            //add jump function arg to block V1
             auto *BI = dyn_cast<BranchInst>(BBPtr->getTerminator());
+            llvm::Constant* TABLE_OFFSET = JBB_IRB.getInt32(modify_blockIndex);
             IRBuilder<> modifyBlock_IRB(BI);
-            std::string setIndexAsmStr = "mov w0, #" + std::to_string(modify_blockIndex);
+            std::string setIndexAsmStr = "mov w0, #$0";
             InlineAsm *setIndexIA = InlineAsm::get(
                 VOID_FT_NO_ARG,
                 setIndexAsmStr,
-                "",
+                "i,~{w0}",
                 true,    // 有副作用
                 false,   // 不对齐栈
                 InlineAsm::AD_ATT,
                 false    
             );
-            modifyBlock_IRB.CreateCall(setIndexIA);
+
+            modifyBlock_IRB.CreateCall(setIndexIA, {TABLE_OFFSET});
+
+
+            //add jump function arg to block V2
+            // auto *BI = dyn_cast<BranchInst>(BBPtr->getTerminator());
+            // IRBuilder<> modifyBlock_IRB(BI);
+            // llvm::Constant* index_data_CONST = llvm::ConstantExpr::getPtrToInt(index_data_BA, modifyBlock_IRB.getInt32Ty());
+            // LoadInst *LoadIndexData = modifyBlock_IRB.CreateLoad(modifyBlock_IRB.getInt32Ty(), index_data_CONST);
+
+
+
 
             //set dest to jump_function
             Instruction* terminator = BBPtr->getTerminator();
+            BasicBlock* successor_block = terminator->getSuccessor(0);
+
+            // if (!successor_block->hasNPredecessorsOrMore(2)){
+            //     if (modify_block_successors_set.find(successor_block) == modify_block_successors_set.end()){
+            //         modify_block_successors_set.insert(terminator->getSuccessor(0));
+            //     }
+            // }
+
+            if (modify_block_successors_set.find(successor_block) == modify_block_successors_set.end()){
+                modify_block_successors_set.insert(terminator->getSuccessor(0));
+            }
+
+
             terminator->setSuccessor(0, JBB);
             //errs() << "Create Ret for " << F->getName() << "\n";
             modify_blockIndex++;
@@ -233,8 +313,12 @@ PreservedAnalyses MyTestIRPass::run(Module &M, ModuleAnalysisManager& AM) {
         }
 
         //end Jump block
-        JBB_IRB.CreateUnreachable();
+        for (auto it = modify_block_successors_set.begin(); it != modify_block_successors_set.end(); it++){
+            wait_add_Ref_blocks.push_back(*it);
 
+        }
+        JBB_IRB.CreateCallBr(jb_empty_IA, LJF_BB, wait_add_Ref_blocks);
+        //OBB_IRB.CreateUnreachable();
 
         errs() << "finish MyTestIRPass On Function" << F->getName() << "\n";
     }
