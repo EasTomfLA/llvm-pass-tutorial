@@ -18,7 +18,7 @@ function build_hikari() {
     cd build
     
     # 尝试make clean，但如果失败则不终止脚本
-    make clean || echo "警告: make clean 失败，可能是首次编译"
+    # make clean || echo "警告: make clean 失败，可能是首次编译"
     
     # 继续编译流程
     cmake .. && make
